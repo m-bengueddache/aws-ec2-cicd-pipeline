@@ -22,9 +22,11 @@ Automation is a series of deliberate decisions, not a single leap. Going straigh
 The same Spring Boot application is deployed to EC2 through four stages, each removing one manual step from the last:
 
 1. **Manual** — console-provisioned EC2, SSH in, `docker run` by hand.
-2. **Scripted infrastructure** — the same infrastructure (VPC, subnet, Internet Gateway, route table, security group, EC2, key pair) recreated entirely via the AWS CLI, plus a first Jenkins multibranch pipeline.
+2. **Scripted infrastructure** — the same VPC/subnet/IGW/route table/security group/EC2/key pair recreated entirely via the AWS CLI instead of console clicks, plus a first Jenkins multibranch pipeline. The idempotent scripts for this stage live in a dedicated repo, [aws-cli-automation](https://github.com/m-bengueddache/aws-cli-automation) — this project picks up from there rather than duplicating them.
 3. **Automated CD via SSH** — Jenkins builds and pushes the image, then SSHes into EC2 to run it directly.
 4. **Compose + dynamic versioning + ECR** — deployment moves to Docker Compose (multi-service: app + Postgres), the image tag is derived from the Maven version instead of hardcoded, and the registry migrates from Docker Hub to Amazon ECR.
+
+This repo picks up the story once the infrastructure exists — its own `Jenkinsfile`/`Dockerfile`/`docker-compose.yaml` implement stages 3-4 (the CD pipeline itself), not stage 2's provisioning.
 
 ## Architecture
 
@@ -34,7 +36,7 @@ flowchart TD
         A1[Console: create EC2] --> A2[SSH in] --> A3["docker run (by hand)"]
     end
     subgraph S2["Stage 2 — CLI infra + first pipeline"]
-        B1["AWS CLI: VPC, subnet, IGW,\nroute table, SG, EC2"] --> B2["Jenkins multibranch\npipeline"] --> B3["docker-compose up\nvia SSH"]
+        B1["aws-cli-automation:\nVPC, subnet, IGW,\nroute table, SG, EC2"] --> B2["Jenkins multibranch\npipeline"] --> B3["docker-compose up\nvia SSH"]
     end
     subgraph S3["Stage 3 → 4 — CD evolution"]
         C1["Jenkins: build + push"] --> C2["SSH: docker run"]
