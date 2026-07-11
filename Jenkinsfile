@@ -1,71 +1,78 @@
 #!/usr/bin/env groovy
 
-def imageName
+library identifier: 'jenkins-groovy-shared-library@master', retriever: modernSCM(
+    [$class: 'GitSCMSource',
+    remote: 'https://github.com/m-bengueddache/jenkins-groovy-shared-library.git',
+    credentialsId: 'git-credentials'
+    ]
+)
 
 pipeline {
     agent any
     tools {
         maven 'maven'
     }
-    environment {
-        ECR_REGISTRY   = credentials('ecr-registry-url')   // e.g. <account-id>.dkr.ecr.<region>.amazonaws.com
-        ECR_REPO       = 'demo-app'
-        EC2_HOST       = credentials('ec2-deploy-host')    // e.g. ec2-user@<public-ip>
-    }
+
     stages {
-        stage('increment version') {
+        stage("increment version") {
             steps {
                 script {
-                    sh '''
-                        mvn build-helper:parse-version versions:set \
-                        -DnewVersion=\\${parsedVersion.majorVersion}.\\${parsedVersion.minorVersion}.\\${parsedVersion.nextIncrementalVersion} \
-                        versions:commit
-                    '''
+                    echo 'incrementing app version...'
+                    sh 'mvn build-helper:parse-version versions:set \
+                    -DnewVersion=\\\${parsedVersion.majorVersion}.\\\${parsedVersion.minorVersion}.\\\${parsedVersion.nextIncrementalVersion} \
+                    versions:commit'
                     def matcher = readFile('pom.xml') =~ '<version>(.+)</version>'
                     def version = matcher[0][1]
-                    imageName = "${ECR_REGISTRY}/${ECR_REPO}:${version}-${BUILD_NUMBER}"
+                    env.IMAGE_NAME = "mb938/demo-app:$version-$BUILD_NUMBER"
                 }
             }
         }
         stage('build app') {
             steps {
-                sh 'mvn clean package'
+                echo 'building application jar...'
+                buildJar()
             }
         }
-        stage('build & push image') {
+        stage('build image') {
             steps {
                 script {
-                    sh "docker build -t ${imageName} ."
-                    withCredentials([usernamePassword(credentialsId: 'ecr-credentials', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
-                        sh "echo \$PASS | docker login --username \$USER --password-stdin ${ECR_REGISTRY}"
-                    }
-                    sh "docker push ${imageName}"
+                    echo 'building the docker image...'
+                    buildImage(env.IMAGE_NAME)
+                    dockerLogin()
+                    dockerPush(env.IMAGE_NAME)
                 }
             }
-        }
-        stage('deploy') {
+        } 
+        stage("deploy") {
             steps {
                 script {
-                    def repo = "${ECR_REGISTRY}/${ECR_REPO}"
-                    def tag  = imageName.substring(repo.length() + 1)
+                    echo 'deploying docker image to EC2...'
+                    def shellCmd = "bash ./server-cmds.sh ${IMAGE_NAME}"
                     sshagent(['ec2-server-key']) {
-                        sh "scp -o StrictHostKeyChecking=no server-cmds.sh docker-compose.yaml ${EC2_HOST}:/home/ec2-user"
-                        sh "ssh -o StrictHostKeyChecking=no ${EC2_HOST} 'bash ./server-cmds.sh ${repo} ${tag}'"
+                        sh "scp -o StrictHostKeyChecking=no server-cmds.sh ec2-user@<EC2_PUBLIC_IP>:/home/ec2-user"
+                        sh "scp -o StrictHostKeyChecking=no docker-compose.yaml ec2-user@<EC2_PUBLIC_IP>:/home/ec2-user"
+                        sh "ssh -o StrictHostKeyChecking=no ec2-user@<EC2_PUBLIC_IP> ${shellCmd}"
                     }
                 }
-            }
+            }               
         }
-        stage('commit version update') {
+        stage ("commit version update") {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'git-credentials', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
-                    sh '''
-                        git config user.email "jenkins@example.com"
-                        git config user.name "jenkins"
-                        git remote set-url origin https://${USER}:${PASS}@github.com/m-bengueddache/aws-ec2-cicd-pipeline.git
-                        git add pom.xml
-                        git commit -m "ci: version bump"
-                        git push origin HEAD:main
-                    '''
+                script {
+                    withCredentials([usernamePassword(credentialsId: 'git-credentials', passwordVariable: 'PASS', usernameVariable: 'USER')]) {
+                        sh 'git config --global user.email "jenkins@example.com"'
+                        sh 'git config --global user.name "jenkins"'
+
+                        sh 'git status'
+                        sh 'git branch'
+                        sh 'git config --list'
+
+                        sh "git remote set-url origin https://${USER}:${PASS}@github.com/m-bengueddache/aws-ec2-cicd-pipeline.git"
+                        sh 'git add .'
+                        sh 'git commit -m "ci: version bump"'
+                        sh 'git pull --rebase origin main'
+                        sh 'git push origin HEAD:main'
+                    }
                 }
             }
         }
